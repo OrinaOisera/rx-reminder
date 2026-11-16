@@ -1,0 +1,19 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "rx-reminder"
+region = "us-east-1"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+stack_name = "rx-reminder"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+s3_prefix = "rx-reminder"
+fail_on_empty_changeset = false
+parameter_overrides = "StageName=\"prod\" DefaultTimezone=\"Africa/Nairobi\" BedrockModelId=\"us.amazon.nova-lite-v1:0\""

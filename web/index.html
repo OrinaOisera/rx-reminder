@@ -1,0 +1,1224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Rx Reminder</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f0e8;
+      --ink: #1b2430;
+      --muted: #3e4a5a;
+      --card: #fffdf8;
+      --line: #d5cdbf;
+      --accent: #0c5c58;
+      --accent-ink: #f7fffe;
+      --amber: #6d4a00;
+      --amber-bg: #fff3d2;
+      --danger: #8c1d18;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #12171e;
+        --ink: #f4efe6;
+        --muted: #c9d0da;
+        --card: #1c242e;
+        --line: #3c4856;
+        --accent: #8ed4cf;
+        --accent-ink: #08211f;
+        --amber: #f0c56a;
+        --amber-bg: #3a2d12;
+        --danger: #ffb4ab;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      border-top: 8px solid transparent;
+      background: var(--bg);
+      color: var(--ink);
+      font: 1.05rem/1.45 system-ui, sans-serif;
+    }
+    header, main, footer { max-width: 42rem; margin: 0 auto; padding: 1rem; }
+    h1 { font-size: 1.6rem; margin: 0 0 0.6rem; }
+    h2 { font-size: 1.3rem; margin: 0 0 0.5rem; }
+    p { margin: 0.4rem 0; }
+    nav, .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    button, input, select, textarea {
+      font: inherit;
+      color: inherit;
+      min-height: 48px;
+    }
+    button {
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--card);
+      padding: 0.55rem 0.9rem;
+    }
+    button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+    button:disabled { opacity: 0.45; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+    nav button[aria-current="page"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+    label { display: block; font-weight: 650; margin: 0.8rem 0 0.25rem; }
+    input, select, textarea {
+      width: 100%;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.45rem 0.6rem;
+    }
+    textarea { min-height: 5.5rem; }
+    input[type="time"], input[type="checkbox"] { width: auto; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 0.9rem;
+      margin: 0.75rem 0;
+    }
+    .needs-attention { border-color: var(--amber); background: var(--amber-bg); }
+    .banner {
+      margin: 0 auto;
+      max-width: 42rem;
+      padding: 0.6rem 1rem;
+      font-weight: 700;
+    }
+    .dot {
+      width: 0.95rem;
+      height: 0.95rem;
+      border-radius: 50%;
+      display: inline-block;
+      border: 1px solid var(--ink);
+      flex: 0 0 auto;
+    }
+    .initial {
+      display: inline-grid;
+      place-items: center;
+      width: 1.8rem;
+      height: 1.8rem;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      font-weight: 750;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      min-height: 48px;
+      border-radius: 999px;
+      padding: 0.3rem 0.8rem;
+    }
+    .chip[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+    .swatches { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+    .swatch { width: 48px; height: 48px; border-radius: 50%; border: 3px solid transparent; padding: 0; }
+    .swatch[aria-pressed="true"] { border-color: var(--ink); }
+    .swatch:disabled { opacity: 0.35; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; padding: 0.1rem 0.55rem; font-size: 0.9rem; }
+    .dose {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      margin: 0.25rem 0.4rem 0.25rem 0;
+      padding: 0.35rem 0.65rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--card);
+    }
+    .error { color: var(--danger); font-weight: 650; }
+    .note { color: var(--muted); }
+    .spinner {
+      width: 2.2rem;
+      height: 2.2rem;
+      border: 3px solid var(--line);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .spinner { animation: none; border-top-color: var(--accent); }
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    footer { color: var(--muted); }
+    #preview { max-width: 100%; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Rx Reminder</h1>
+    <nav aria-label="Main">
+      <button type="button" data-screen="family">Family</button>
+      <button type="button" data-screen="capture">New prescription</button>
+      <button type="button" data-screen="prescriptions">Prescriptions</button>
+      <button type="button" data-screen="setup">Setup</button>
+    </nav>
+  </header>
+  <p id="who" class="banner" hidden></p>
+  <main>
+    <section id="setup">
+      <h2>Setup</h2>
+      <p class="note">Reminders go to the address or number you enter, for example the caregiver.</p>
+      <form id="setup-form">
+        <label for="api-url">API URL</label>
+        <input id="api-url" name="apiUrl" type="url" required autocomplete="off" value="https://edpln6b7o0.execute-api.us-east-1.amazonaws.com/prod">
+        <label for="api-key">API key</label>
+        <input id="api-key" name="apiKey" type="password" required minlength="16" autocomplete="off">
+        <label for="timezone">Timezone</label>
+        <input id="timezone" name="timezone" required autocomplete="off">
+        <label for="channel">Reminder channel</label>
+        <select id="channel" name="channel">
+          <option value="email">Email</option>
+          <option value="sms">SMS</option>
+        </select>
+        <label for="destination">Email or phone</label>
+        <input id="destination" name="destination" type="email" autocomplete="email">
+        <label for="wake">Wake time</label>
+        <input id="wake" name="wake" type="time" required value="07:00">
+        <label for="sleep">Sleep time</label>
+        <input id="sleep" name="sleep" type="time" required value="22:00">
+        <p class="row"><button class="primary" type="submit">Save setup</button></p>
+      </form>
+      <p id="setup-status" class="error" role="status"></p>
+    </section>
+
+    <section id="family" hidden>
+      <h2>Family</h2>
+      <p class="note">A first name or nickname is enough. Renaming or recolouring does not change schedules that already exist.</p>
+      <div id="family-list"></div>
+      <form id="family-form" class="card">
+        <h3 id="family-form-title">Add a person</h3>
+        <label for="person-name">Name</label>
+        <input id="person-name" required maxlength="40" autocomplete="name">
+        <label for="person-relationship">Relationship, optional</label>
+        <input id="person-relationship" maxlength="30" autocomplete="off">
+        <p id="colour-label">Colour</p>
+        <div id="swatches" class="swatches" role="group" aria-labelledby="colour-label"></div>
+        <p class="row">
+          <button class="primary" type="submit">Save person</button>
+          <button type="button" id="use-me">Use “Me”</button>
+          <button type="button" id="family-cancel" hidden>Cancel edit</button>
+        </p>
+      </form>
+      <p id="family-status" class="error" role="status"></p>
+    </section>
+
+    <section id="capture" hidden>
+      <h2>New prescription</h2>
+      <p>Who is this prescription for?</p>
+      <div id="patient-chips" class="row"></div>
+      <form id="capture-form">
+        <label for="photo">Photo of the prescription or label</label>
+        <input id="photo" type="file" accept="image/*" capture="environment">
+        <img id="preview" alt="" hidden>
+        <p class="row"><button class="primary" type="submit">Upload photo</button></p>
+      </form>
+      <p id="capture-status" class="error" role="status"></p>
+    </section>
+
+    <section id="processing" hidden>
+      <h2>Reading the photo</h2>
+      <div class="spinner" role="status" aria-label="Reading the photo"></div>
+      <p id="processing-status">This usually takes under a minute.</p>
+      <p class="row"><button type="button" id="processing-retry" hidden>Try another photo</button></p>
+    </section>
+
+    <section id="medicines" hidden>
+      <h2>Check the medicines</h2>
+      <div id="medicine-warnings"></div>
+      <label for="start">Start date and time</label>
+      <input id="start" type="datetime-local" required>
+      <div id="medicine-cards"></div>
+      <p class="row"><button class="primary" type="button" id="to-schedule">Next: preview schedule</button></p>
+      <p id="medicine-status" class="error" role="status"></p>
+    </section>
+
+    <section id="schedule" hidden>
+      <h2>Check the schedule</h2>
+      <div id="schedule-notes"></div>
+      <label for="start-2">Start date and time</label>
+      <input id="start-2" type="datetime-local" required>
+      <label for="wake-2">Wake time</label>
+      <input id="wake-2" type="time" required>
+      <label for="sleep-2">Sleep time</label>
+      <input id="sleep-2" type="time" required>
+      <div id="slot-editors"></div>
+      <div id="schedule-result"></div>
+      <label for="ack"><input id="ack" type="checkbox"> <span id="ack-label">I have checked that this schedule is correct</span></label>
+      <p class="row"><button class="primary" type="button" id="confirm-btn">Confirm and create reminders</button></p>
+      <p id="schedule-status" class="error" role="status"></p>
+    </section>
+
+    <section id="done" hidden>
+      <h2>Reminders are on</h2>
+      <div id="done-body"></div>
+    </section>
+
+    <section id="prescriptions" hidden>
+      <h2>Prescriptions</h2>
+      <label for="rx-filter">Show</label>
+      <select id="rx-filter"></select>
+      <div id="rx-list"></div>
+      <p id="rx-status" class="error" role="status"></p>
+    </section>
+  </main>
+  <footer>Reminder aid only. Not medical advice. Always follow your doctor's or pharmacist's instructions.</footer>
+  <script>
+    const STORE = "rxReminder.setup";
+    const FORMS = ["tablet", "capsule", "syrup", "injection", "cream", "drops", "inhaler", "other"];
+    const UNITS = ["tablet", "capsule", "ml", "mg", "puff", "drop", "unit", "other"];
+    const ROUTES = ["oral", "topical", "inhaled", "injection", "eye", "ear", "other"];
+    const HINTS = ["morning", "noon", "evening", "bedtime"];
+    const FOOD = ["before", "with", "after"];
+    const FLOW = ["capture", "processing", "medicines", "schedule", "done"];
+
+    const state = {
+      patients: [],
+      palette: [],
+      patientId: "",
+      editingId: "",
+      colour: "",
+      prescriptionId: "",
+      meds: [],
+      warnings: [],
+      start: "",
+      preview: null,
+      previewBusy: false,
+      previewError: "",
+      done: null,
+      photo: null,
+    };
+    let pollTimer = 0;
+    let previewTimer = 0;
+    let previewSeq = 0;
+    let listToken = 0;
+
+    function $(id) { return document.getElementById(id); }
+    function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+    function text(tag, value, className) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      node.textContent = value == null ? "" : String(value);
+      return node;
+    }
+    function config() {
+      try { return JSON.parse(localStorage.getItem(STORE) || "{}"); }
+      catch (err) { return {}; }
+    }
+    function saveConfig(next) {
+      localStorage.setItem(STORE, JSON.stringify(next));
+    }
+    function zoneName() {
+      try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "Africa/Nairobi"; }
+      catch (err) { return "Africa/Nairobi"; }
+    }
+    function colorOf(key) {
+      return state.palette.find((item) => item.colorKey === key) || { hex: "#708090", emoji: "", colorKey: key || "" };
+    }
+    function patientById(id) {
+      return state.patients.find((item) => item.patientId === id) || null;
+    }
+    function selectedPatient() {
+      return patientById(state.patientId);
+    }
+    function dot(key) {
+      const node = document.createElement("span");
+      node.className = "dot";
+      node.style.background = colorOf(key).hex;
+      node.setAttribute("aria-hidden", "true");
+      return node;
+    }
+    function initial(name) {
+      const node = document.createElement("span");
+      node.className = "initial";
+      node.textContent = ((name || "?").trim().charAt(0) || "?").toUpperCase();
+      return node;
+    }
+    function chipLabel(person) {
+      const wrap = document.createElement("span");
+      wrap.append(initial(person.name), " ", person.name);
+      return wrap;
+    }
+    function stopPoll() {
+      window.clearTimeout(pollTimer);
+      pollTimer = 0;
+    }
+    function show(name) {
+      if (!FLOW.includes(name)) stopPoll();
+      document.querySelectorAll("main > section").forEach((section) => {
+        section.hidden = section.id !== name;
+      });
+      document.querySelectorAll("nav button").forEach((button) => {
+        if (button.dataset.screen === name) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      });
+      const person = selectedPatient();
+      const who = $("who");
+      const inFlow = person && FLOW.includes(name);
+      document.body.style.borderTopColor = inFlow ? colorOf(person.colorKey).hex : "transparent";
+      who.hidden = !inFlow;
+      if (inFlow) {
+        who.textContent = name === "schedule" || name === "done" ? "Schedule for " + person.name : "For " + person.name;
+      }
+      if (name === "family") loadFamily();
+      if (name === "capture") renderCapture();
+      if (name === "prescriptions") loadPrescriptions();
+      if (name === "setup") fillSetup();
+    }
+
+    async function api(method, path, body) {
+      const saved = config();
+      if (!saved.apiUrl || !saved.apiKey) {
+        const err = new Error("Add the API URL and key in Setup.");
+        err.status = 401;
+        throw err;
+      }
+      const response = await fetch(saved.apiUrl.replace(/\/$/, "") + path, {
+        method,
+        headers: { "content-type": "application/json", "x-api-key": saved.apiKey },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      let data = {};
+      try { data = await response.json(); } catch (err) { data = {}; }
+      if (!response.ok) {
+        const err = new Error(data.error || "The request failed.");
+        err.status = response.status;
+        throw err;
+      }
+      return data;
+    }
+
+    function fillSetup() {
+      const saved = config();
+      $("api-url").value = saved.apiUrl || $("api-url").defaultValue;
+      $("api-key").value = saved.apiKey || "";
+      $("timezone").value = saved.timezone || zoneName();
+      $("channel").value = saved.channel || "email";
+      $("destination").value = saved.destination || "";
+      $("wake").value = saved.wake || "07:00";
+      $("sleep").value = saved.sleep || "22:00";
+      syncDestinationType();
+    }
+    function syncDestinationType() {
+      const email = $("channel").value !== "sms";
+      $("destination").type = email ? "email" : "tel";
+      $("destination").placeholder = email ? "you@example.com" : "+254712345678";
+      $("destination").autocomplete = email ? "email" : "tel";
+    }
+    $("channel").addEventListener("change", syncDestinationType);
+    $("setup-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const next = {
+        apiUrl: $("api-url").value.trim(),
+        apiKey: $("api-key").value.trim(),
+        timezone: $("timezone").value.trim() || zoneName(),
+        channel: $("channel").value,
+        destination: $("destination").value.trim(),
+        wake: $("wake").value || "07:00",
+        sleep: $("sleep").value || "22:00",
+      };
+      if (!next.apiUrl.startsWith("https://") || next.apiKey.length < 16) {
+        $("setup-status").textContent = "Use an https API URL and a key of at least 16 characters.";
+        return;
+      }
+      if (next.sleep <= next.wake) {
+        $("setup-status").textContent = "Sleep time must be after wake time.";
+        return;
+      }
+      saveConfig(next);
+      $("setup-status").textContent = "Saved on this browser.";
+      show("family");
+    });
+
+    async function loadFamily() {
+      const token = ++listToken;
+      $("family-status").textContent = "";
+      try {
+        const data = await api("GET", "/patients");
+        if (token !== listToken) return;
+        state.patients = data.patients || [];
+        state.palette = data.palette || [];
+        renderFamily();
+        if (!state.patients.length) {
+          $("family-status").textContent = "Add at least one person before a prescription. You can start with Me.";
+        }
+      } catch (err) {
+        if (token !== listToken) return;
+        $("family-status").textContent = err.message;
+      }
+    }
+    function renderFamily() {
+      const list = $("family-list");
+      clear(list);
+      if (!state.patients.length) list.append(text("p", "No one is saved yet."));
+      state.patients.forEach((person) => {
+        const card = document.createElement("article");
+        card.className = "card";
+        const title = document.createElement("p");
+        title.append(dot(person.colorKey), " ", initial(person.name), " ", person.name);
+        card.append(title);
+        if (person.relationship) card.append(text("p", person.relationship, "note"));
+        const row = document.createElement("p");
+        row.className = "row";
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.textContent = "Edit " + person.name;
+        edit.addEventListener("click", () => beginEdit(person));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "Remove " + person.name;
+        remove.addEventListener("click", () => removePerson(person));
+        row.append(edit, remove);
+        card.append(row);
+        list.append(card);
+      });
+      renderSwatches();
+    }
+    function renderSwatches() {
+      const box = $("swatches");
+      clear(box);
+      const used = new Map(state.patients.filter((item) => item.patientId !== state.editingId).map((item) => [item.colorKey, item.name]));
+      state.palette.forEach((color) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "swatch";
+        button.style.background = color.hex;
+        button.setAttribute("aria-pressed", state.colour === color.colorKey ? "true" : "false");
+        const owner = used.get(color.colorKey);
+        button.disabled = Boolean(owner);
+        button.title = owner ? "used by " + owner : color.colorKey;
+        button.setAttribute("aria-label", owner ? color.colorKey + ", used by " + owner : color.colorKey);
+        button.addEventListener("click", () => {
+          state.colour = color.colorKey;
+          renderSwatches();
+        });
+        box.append(button);
+      });
+    }
+    function beginEdit(person) {
+      state.editingId = person.patientId;
+      state.colour = person.colorKey;
+      $("family-form-title").textContent = "Edit " + person.name;
+      $("person-name").value = person.name;
+      $("person-relationship").value = person.relationship || "";
+      $("family-cancel").hidden = false;
+      renderSwatches();
+    }
+    function resetFamilyForm() {
+      state.editingId = "";
+      state.colour = "";
+      $("family-form").reset();
+      $("family-form-title").textContent = "Add a person";
+      $("family-cancel").hidden = true;
+      renderSwatches();
+    }
+    $("use-me").addEventListener("click", () => { $("person-name").value = "Me"; $("person-name").focus(); });
+    $("family-cancel").addEventListener("click", resetFamilyForm);
+    $("family-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const body = { name: $("person-name").value.trim() };
+      const relationship = $("person-relationship").value.trim();
+      if (relationship) body.relationship = relationship;
+      if (state.colour) body.colorKey = state.colour;
+      try {
+        if (state.editingId) await api("PATCH", "/patients/" + state.editingId, body);
+        else await api("POST", "/patients", body);
+        resetFamilyForm();
+        await loadFamily();
+      } catch (err) {
+        $("family-status").textContent = err.message;
+      }
+    });
+    async function removePerson(person) {
+      if (!window.confirm("Remove " + person.name + "?")) return;
+      try {
+        await api("DELETE", "/patients/" + person.patientId);
+        if (state.patientId === person.patientId) state.patientId = "";
+        await loadFamily();
+      } catch (err) {
+        $("family-status").textContent = err.message;
+      }
+    }
+
+    function renderCapture() {
+      const box = $("patient-chips");
+      clear(box);
+      $("capture-status").textContent = state.patients.length ? "" : "Add a family member first.";
+      state.patients.forEach((person) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "chip";
+        button.setAttribute("aria-pressed", person.patientId === state.patientId ? "true" : "false");
+        button.append(dot(person.colorKey), chipLabel(person));
+        button.addEventListener("click", () => {
+          state.patientId = person.patientId;
+          show("capture");
+        });
+        box.append(button);
+      });
+    }
+    $("photo").addEventListener("change", async () => {
+      const file = $("photo").files && $("photo").files[0];
+      $("preview").hidden = true;
+      state.photo = null;
+      if (!file) return;
+      try {
+        state.photo = await compress(file);
+        $("preview").src = URL.createObjectURL(state.photo);
+        $("preview").alt = "Photo ready to upload";
+        $("preview").hidden = false;
+        $("capture-status").textContent = "";
+      } catch (err) {
+        $("capture-status").textContent = err.message;
+      }
+    });
+    function compress(file) {
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        const url = URL.createObjectURL(file);
+        image.onload = () => {
+          const scale = Math.min(1, 2000 / Math.max(image.width, image.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(image.width * scale));
+          canvas.height = Math.max(1, Math.round(image.height * scale));
+          canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob((blob) => {
+            URL.revokeObjectURL(url);
+            if (!blob) reject(new Error("Could not prepare that photo. Use a JPEG or PNG."));
+            else if (blob.size > 10 * 1024 * 1024) reject(new Error("That photo is still over 10 MB. Try a closer crop."));
+            else resolve(blob);
+          }, "image/jpeg", 0.85);
+        };
+        image.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error("This browser could not read that photo. Use a JPEG or PNG."));
+        };
+        image.src = url;
+      });
+    }
+    $("capture-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!state.patientId) {
+        $("capture-status").textContent = "Choose who this prescription is for.";
+        return;
+      }
+      if (!state.photo) {
+        $("capture-status").textContent = "Choose a photo first.";
+        return;
+      }
+      try {
+        $("capture-status").textContent = "Uploading…";
+        const created = await api("POST", "/prescriptions", { patientId: state.patientId, contentType: "image/jpeg" });
+        const put = await fetch(created.uploadUrl, { method: "PUT", headers: created.uploadHeaders, body: state.photo });
+        if (!put.ok) throw new Error("The photo upload was refused.");
+        state.prescriptionId = created.prescriptionId;
+        show("processing");
+        poll(0);
+      } catch (err) {
+        $("capture-status").textContent = err.message;
+      }
+    });
+
+    function poll(attempt) {
+      stopPoll();
+      $("processing-retry").hidden = true;
+      $("processing-status").textContent = "Reading the photo…";
+      const tick = async () => {
+        try {
+          const item = await api("GET", "/prescriptions/" + state.prescriptionId);
+          if (item.status === "PENDING_REVIEW") {
+            openMedicines(item);
+            return;
+          }
+          if (item.status === "FAILED") {
+            $("processing-status").textContent = item.failureReason || "The photo could not be read.";
+            $("processing-retry").hidden = false;
+            return;
+          }
+        } catch (err) {
+          $("processing-status").textContent = err.message;
+          $("processing-retry").hidden = false;
+          return;
+        }
+        if (attempt >= 44) {
+          $("processing-status").textContent = "This is taking longer than expected. You can check the prescription list.";
+          $("processing-retry").hidden = false;
+          return;
+        }
+        pollTimer = window.setTimeout(() => poll(attempt + 1), 2000);
+      };
+      tick();
+    }
+    $("processing-retry").addEventListener("click", () => show("capture"));
+
+    function defaultStart() {
+      const when = new Date();
+      when.setDate(when.getDate() + 1);
+      when.setHours(8, 0, 0, 0);
+      const pad = (value) => String(value).padStart(2, "0");
+      return when.getFullYear() + "-" + pad(when.getMonth() + 1) + "-" + pad(when.getDate()) + "T" + pad(when.getHours()) + ":" + pad(when.getMinutes());
+    }
+    function openMedicines(item) {
+      const extracted = item.extracted || {};
+      state.warnings = extracted.warnings || [];
+      state.meds = (extracted.medications || []).map((med) => ({
+        name: med.name || "",
+        strength: med.strength || "",
+        form: med.form || "",
+        dose_amount: med.dose_amount == null ? "" : String(med.dose_amount),
+        dose_unit: med.dose_unit || "",
+        route: med.route || "",
+        times_per_day: med.times_per_day == null ? "" : String(med.times_per_day),
+        interval_hours: med.interval_hours == null ? "" : String(med.interval_hours),
+        timing_hint: med.timing_hint || "",
+        with_food: med.with_food || "",
+        duration_days: med.duration_days == null ? "" : String(med.duration_days),
+        as_needed: med.as_needed === true,
+        instructions: med.instructions || "",
+        confidence: med.confidence || "low",
+        source_text: med.source_text || "",
+        slots: null,
+      }));
+      state.start = state.start || defaultStart();
+      $("start").value = state.start;
+      renderMedicines();
+      show("medicines");
+    }
+    function field(label, node) {
+      const wrap = document.createElement("label");
+      wrap.append(label, node);
+      return wrap;
+    }
+    function select(options, value) {
+      const node = document.createElement("select");
+      const blank = document.createElement("option");
+      blank.value = "";
+      blank.textContent = "Not set";
+      node.append(blank);
+      options.forEach((option) => {
+        const item = document.createElement("option");
+        item.value = option;
+        item.textContent = option;
+        node.append(item);
+      });
+      node.value = value || "";
+      return node;
+    }
+    function medReady(med) {
+      if (!med.name.trim()) return false;
+      if (med.as_needed) return true;
+      const days = Number(med.duration_days);
+      if (!Number.isInteger(days) || days < 1 || days > 365) return false;
+      return Boolean(med.times_per_day || med.interval_hours || med.timing_hint || (med.slots && med.slots.length));
+    }
+    function renderMedicines() {
+      const box = $("medicine-cards");
+      clear(box);
+      const warnings = $("medicine-warnings");
+      clear(warnings);
+      state.warnings.forEach((warning) => warnings.append(text("p", warning, "card needs-attention")));
+      if (!state.meds.length) box.append(text("p", "No medicines were found. You can go back and try a clearer photo."));
+      state.meds.forEach((med, index) => {
+        const card = document.createElement("article");
+        const weak = med.confidence === "low" || med.confidence === "medium" || !medReady(med);
+        card.className = weak ? "card needs-attention" : "card";
+        card.append(text("p", "Confidence: " + (med.confidence || "low"), "badge"));
+        const name = document.createElement("input");
+        name.value = med.name;
+        name.maxLength = 100;
+        name.required = true;
+        name.addEventListener("input", () => { med.name = name.value; refreshMedicineGate(); });
+        card.append(field("Medicine name", name));
+        const strength = document.createElement("input");
+        strength.value = med.strength;
+        strength.addEventListener("input", () => { med.strength = strength.value; });
+        card.append(field("Strength", strength));
+        const form = select(FORMS, med.form);
+        form.addEventListener("change", () => { med.form = form.value; });
+        card.append(field("Form", form));
+        const amount = document.createElement("input");
+        amount.type = "number";
+        amount.min = "0";
+        amount.step = "0.001";
+        amount.value = med.dose_amount;
+        amount.addEventListener("input", () => { med.dose_amount = amount.value; });
+        card.append(field("Dose amount", amount));
+        const unit = select(UNITS, med.dose_unit);
+        unit.addEventListener("change", () => { med.dose_unit = unit.value; });
+        card.append(field("Dose unit", unit));
+        const route = select(ROUTES, med.route);
+        route.addEventListener("change", () => { med.route = route.value; });
+        card.append(field("Route", route));
+        const times = document.createElement("input");
+        times.type = "number";
+        times.min = "1";
+        times.max = "6";
+        times.value = med.times_per_day;
+        times.addEventListener("input", () => { med.times_per_day = times.value; med.slots = null; refreshMedicineGate(); });
+        card.append(field("Times per day", times));
+        const interval = document.createElement("input");
+        interval.type = "number";
+        interval.min = "1";
+        interval.max = "24";
+        interval.value = med.interval_hours;
+        interval.addEventListener("input", () => { med.interval_hours = interval.value; med.slots = null; refreshMedicineGate(); });
+        card.append(field("Or hours between doses", interval));
+        const hint = select(HINTS, med.timing_hint);
+        hint.addEventListener("change", () => { med.timing_hint = hint.value; med.slots = null; refreshMedicineGate(); });
+        card.append(field("Time of day hint", hint));
+        const food = select(FOOD, med.with_food);
+        food.addEventListener("change", () => { med.with_food = food.value; });
+        card.append(field("With food", food));
+        const days = document.createElement("input");
+        days.type = "number";
+        days.min = "1";
+        days.max = "365";
+        days.value = med.duration_days;
+        days.addEventListener("input", () => { med.duration_days = days.value; refreshMedicineGate(); });
+        card.append(field("Number of days", days));
+        const needed = document.createElement("input");
+        needed.type = "checkbox";
+        needed.checked = med.as_needed;
+        needed.addEventListener("change", () => { med.as_needed = needed.checked; refreshMedicineGate(); });
+        card.append(field("As needed, do not schedule", needed));
+        const instructions = document.createElement("textarea");
+        instructions.maxLength = 200;
+        instructions.value = med.instructions;
+        instructions.addEventListener("input", () => { med.instructions = instructions.value; });
+        card.append(field("Instructions", instructions));
+        if (med.source_text) card.append(text("p", "Read from: " + med.source_text, "note"));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "Remove this medicine";
+        remove.addEventListener("click", () => { state.meds.splice(index, 1); renderMedicines(); });
+        card.append(remove);
+        box.append(card);
+      });
+      refreshMedicineGate();
+    }
+    function refreshMedicineGate() {
+      const ready = Boolean(state.start) && state.meds.length > 0 && state.meds.every(medReady);
+      $("to-schedule").disabled = !ready;
+    }
+    $("start").addEventListener("input", () => { state.start = $("start").value; refreshMedicineGate(); });
+    $("to-schedule").addEventListener("click", () => {
+      const saved = config();
+      $("start-2").value = state.start;
+      $("wake-2").value = saved.wake || "07:00";
+      $("sleep-2").value = saved.sleep || "22:00";
+      const person = selectedPatient();
+      $("ack-label").textContent = "I have checked that this schedule is correct for " + (person ? person.name : "this person");
+      $("confirm-btn").textContent = "Confirm and create reminders for " + (person ? person.name : "this person");
+      $("ack").checked = false;
+      show("schedule");
+      renderSlotEditors();
+      queuePreview(0);
+    });
+
+    function numberOrOmit(value) {
+      if (value === "" || value == null) return undefined;
+      const number = Number(value);
+      return Number.isFinite(number) ? number : undefined;
+    }
+    function medPayload(med) {
+      const body = { name: med.name.trim(), as_needed: med.as_needed === true };
+      ["strength", "form", "dose_unit", "route", "timing_hint", "with_food", "instructions", "confidence"].forEach((key) => {
+        if (med[key]) body[key] = med[key];
+      });
+      const amount = numberOrOmit(med.dose_amount);
+      const times = numberOrOmit(med.times_per_day);
+      const interval = numberOrOmit(med.interval_hours);
+      const days = numberOrOmit(med.duration_days);
+      if (amount !== undefined) body.dose_amount = amount;
+      if (times !== undefined) body.times_per_day = times;
+      if (interval !== undefined) body.interval_hours = interval;
+      if (days !== undefined) body.duration_days = days;
+      if (Array.isArray(med.slots) && med.slots.length) body.slots = med.slots.slice();
+      return body;
+    }
+    function settingsPayload(withChannel) {
+      const saved = config();
+      const body = {
+        timezone: saved.timezone || zoneName(),
+        startDateTime: state.start,
+        wakeTime: $("wake-2").value || saved.wake || "07:00",
+        sleepTime: $("sleep-2").value || saved.sleep || "22:00",
+      };
+      if (withChannel) {
+        body.channel = saved.channel || "email";
+        body.destination = saved.destination || "";
+      }
+      return body;
+    }
+    function renderSlotEditors() {
+      const box = $("slot-editors");
+      clear(box);
+      state.meds.forEach((med, index) => {
+        const card = document.createElement("article");
+        card.className = "card";
+        card.append(text("h3", med.name || "Medicine"));
+        if (med.as_needed) {
+          card.append(text("p", "As-needed medicines are not scheduled."));
+          box.append(card);
+          return;
+        }
+        const days = document.createElement("input");
+        days.type = "number";
+        days.min = "1";
+        days.max = "365";
+        days.value = med.duration_days;
+        days.addEventListener("input", () => { med.duration_days = days.value; queuePreview(400); });
+        card.append(field("Days", days));
+        const slots = Array.isArray(med.slots) ? med.slots : [];
+        slots.forEach((slot, slotIndex) => {
+          const row = document.createElement("p");
+          row.className = "row";
+          const time = document.createElement("input");
+          time.type = "time";
+          time.value = slot;
+          time.setAttribute("aria-label", "Time " + (slotIndex + 1) + " for " + (med.name || "medicine"));
+          time.addEventListener("input", () => { med.slots[slotIndex] = time.value; queuePreview(400); });
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "Remove time";
+          remove.addEventListener("click", () => { med.slots.splice(slotIndex, 1); renderSlotEditors(); queuePreview(0); });
+          row.append(time, remove);
+          card.append(row);
+        });
+        const add = document.createElement("button");
+        add.type = "button";
+        add.textContent = "Add time";
+        add.disabled = slots.length >= 6;
+        add.addEventListener("click", () => {
+          if (!Array.isArray(med.slots)) med.slots = [];
+          if (med.slots.length >= 6) return;
+          med.slots.push("08:00");
+          renderSlotEditors();
+          queuePreview(0);
+        });
+        card.append(add);
+        box.append(card);
+      });
+    }
+    function queuePreview(wait) {
+      window.clearTimeout(previewTimer);
+      state.previewBusy = true;
+      updateConfirm();
+      previewTimer = window.setTimeout(runPreview, wait);
+    }
+    async function runPreview() {
+      const seq = ++previewSeq;
+      state.previewBusy = true;
+      updateConfirm();
+      try {
+        const data = await api("POST", "/prescriptions/" + state.prescriptionId + "/preview", {
+          medications: state.meds.map(medPayload),
+          settings: settingsPayload(false),
+        });
+        if (seq !== previewSeq) return;
+        state.preview = data;
+        state.previewError = "";
+        $("schedule-status").textContent = "";
+        let filled = false;
+        (data.perMedication || []).forEach((row) => {
+          const med = state.meds[row.medIdx];
+          if (med && !med.as_needed && !Array.isArray(med.slots)) {
+            med.slots = (row.slots || []).slice();
+            filled = true;
+          }
+        });
+        if (filled) renderSlotEditors();
+        renderPreview(data);
+      } catch (err) {
+        if (seq !== previewSeq) return;
+        state.preview = null;
+        state.previewError = err.message;
+        renderPreview(null);
+      } finally {
+        if (seq === previewSeq) {
+          state.previewBusy = false;
+          updateConfirm();
+        }
+      }
+    }
+    function renderPreview(data) {
+      const notes = $("schedule-notes");
+      const result = $("schedule-result");
+      clear(notes);
+      clear(result);
+      if (state.previewError) notes.append(text("p", state.previewError, "error"));
+      if (!data) return;
+      (data.notes || []).concat(data.warnings || []).forEach((line) => notes.append(text("p", line, "card needs-attention")));
+      const person = data.patient || {};
+      (data.perMedication || []).forEach((row) => {
+        const card = document.createElement("article");
+        card.className = "card";
+        card.append(dot(person.colorKey), " ", initial(person.name));
+        card.append(text("p", row.name + (row.doseText ? " " + row.doseText : "")));
+        card.append(text("p", "First dose: " + (row.firstDose || "none")));
+        card.append(text("p", "Last dose: " + (row.lastDose || "none")));
+        card.append(text("p", "Reminders: " + row.doseCount));
+        result.append(card);
+      });
+      const days = data.days || [];
+      days.forEach((day, index) => {
+        const block = document.createElement("section");
+        block.className = "day";
+        block.hidden = index >= 7;
+        block.append(text("h3", day.date));
+        (day.doses || []).forEach((dose) => {
+          const chip = document.createElement("p");
+          chip.className = "dose";
+          chip.append(dot(person.colorKey), " ", dose.time + " " + dose.name + (dose.doseText ? " " + dose.doseText : ""));
+          block.append(chip);
+        });
+        result.append(block);
+      });
+      if (days.length > 7) {
+        const more = document.createElement("button");
+        more.type = "button";
+        more.textContent = "Show all " + days.length + " days";
+        more.addEventListener("click", () => {
+          const expand = more.dataset.open !== "yes";
+          result.querySelectorAll(".day").forEach((day, index) => { day.hidden = expand ? false : index >= 7; });
+          more.dataset.open = expand ? "yes" : "no";
+          more.textContent = expand ? "Show the first 7 days" : "Show all " + days.length + " days";
+        });
+        result.append(more);
+      }
+      result.append(text("p", "Total reminders: " + data.totalDoses));
+    }
+    function updateConfirm() {
+      $("confirm-btn").disabled = state.previewBusy || !state.preview || Boolean(state.previewError) || !$("ack").checked;
+      const status = $("schedule-status");
+      if (state.previewBusy) status.textContent = "Updating the schedule…";
+      else if (status.textContent === "Updating the schedule…") status.textContent = "";
+    }
+    ["start-2", "wake-2", "sleep-2"].forEach((id) => {
+      $(id).addEventListener("input", () => {
+        if (id === "start-2") state.start = $("start-2").value;
+        if (id === "wake-2" || id === "sleep-2") {
+          const saved = config();
+          saved.wake = $("wake-2").value;
+          saved.sleep = $("sleep-2").value;
+          saveConfig(saved);
+        }
+        queuePreview(400);
+      });
+    });
+    $("ack").addEventListener("change", updateConfirm);
+    $("confirm-btn").addEventListener("click", async () => {
+      const saved = config();
+      if (!saved.destination) {
+        $("schedule-status").textContent = "Add an email or phone number in Setup first.";
+        return;
+      }
+      try {
+        $("confirm-btn").disabled = true;
+        const result = await api("POST", "/prescriptions/" + state.prescriptionId + "/confirm", {
+          acknowledged: true,
+          scheduleHash: state.preview.scheduleHash,
+          medications: state.meds.map(medPayload),
+          settings: settingsPayload(true),
+        });
+        state.done = result;
+        renderDone();
+        show("done");
+      } catch (err) {
+        state.previewError = err.message;
+        renderPreview(state.preview);
+        if (err.status === 409) queuePreview(0);
+        else updateConfirm();
+      }
+    });
+
+    function renderDone() {
+      const body = $("done-body");
+      clear(body);
+      const result = state.done || {};
+      const person = result.patient || selectedPatient() || { name: "Patient", colorKey: "" };
+      const title = document.createElement("p");
+      title.append(dot(person.colorKey), " ", initial(person.name), " ", person.name);
+      body.append(title);
+      body.append(text("p", "First dose: " + (result.firstDose || "none")));
+      body.append(text("p", "Last dose: " + (result.lastDose || "none")));
+      body.append(text("p", "Total reminders: " + (result.doseCount == null ? "0" : result.doseCount)));
+      (result.notes || []).forEach((line) => body.append(text("p", line)));
+      const row = document.createElement("p");
+      row.className = "row";
+      const download = document.createElement("button");
+      download.type = "button";
+      download.className = "primary";
+      download.textContent = "Download calendar (.ics)";
+      download.addEventListener("click", () => downloadCalendar(state.prescriptionId, result.icsUrl));
+      const test = document.createElement("button");
+      test.type = "button";
+      test.textContent = "Send me a test reminder now";
+      test.addEventListener("click", () => sendTest(state.prescriptionId, $("done-status")));
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.textContent = "Cancel this schedule";
+      cancel.addEventListener("click", () => cancelSchedule(state.prescriptionId, person.name));
+      row.append(download, test, cancel);
+      body.append(row);
+      const help = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "Add this to my calendar in " + person.name + "'s colour";
+      help.append(summary);
+      help.append(text("p", "Apple Calendar: open the downloaded file and import it. The colour is stored in the file."));
+      help.append(text("p", "Outlook: open the file. It can use the stored colour."));
+      help.append(text("p", "Google Calendar ignores colours inside an .ics file. Create a calendar named Meds - " + person.name + ", set its colour in Google's settings, then import this file into that calendar. The emoji and name stay in every title."));
+      body.append(help);
+      body.append(text("p", "", "error"));
+      body.lastChild.id = "done-status";
+    }
+    function statusSlot() {
+      if (!$("prescriptions").hidden) return $("rx-status");
+      return $("done-status") || $("rx-status");
+    }
+    async function downloadCalendar(id, direct) {
+      try {
+        const url = direct || (await api("GET", "/prescriptions/" + id + "/calendar")).icsUrl;
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.click();
+      } catch (err) {
+        statusSlot().textContent = err.message;
+      }
+    }
+    async function sendTest(id, slot) {
+      try {
+        await api("POST", "/prescriptions/" + id + "/test-reminder");
+        slot.textContent = "Test reminder sent.";
+      } catch (err) {
+        slot.textContent = err.message;
+      }
+    }
+    async function cancelSchedule(id, name) {
+      if (!window.confirm("Cancel reminders for " + name + "?")) return;
+      try {
+        await api("DELETE", "/prescriptions/" + id);
+        show("prescriptions");
+      } catch (err) {
+        statusSlot().textContent = err.message;
+      }
+    }
+
+    async function loadPrescriptions() {
+      const token = ++listToken;
+      $("rx-status").textContent = "";
+      try {
+        if (!state.patients.length) {
+          const people = await api("GET", "/patients");
+          state.patients = people.patients || [];
+          state.palette = people.palette || [];
+        }
+        const filter = $("rx-filter").value;
+        const path = filter ? "/prescriptions?patientId=" + encodeURIComponent(filter) : "/prescriptions";
+        const data = await api("GET", path);
+        if (token !== listToken) return;
+        renderFilter();
+        renderPrescriptions(data.prescriptions || []);
+      } catch (err) {
+        if (token !== listToken) return;
+        $("rx-status").textContent = err.message;
+      }
+    }
+    function renderFilter() {
+      const select = $("rx-filter");
+      const current = select.value;
+      clear(select);
+      const all = document.createElement("option");
+      all.value = "";
+      all.textContent = "Everyone";
+      select.append(all);
+      state.patients.forEach((person) => {
+        const option = document.createElement("option");
+        option.value = person.patientId;
+        option.textContent = person.name;
+        select.append(option);
+      });
+      select.value = current;
+    }
+    $("rx-filter").addEventListener("change", loadPrescriptions);
+    function renderPrescriptions(rows) {
+      const list = $("rx-list");
+      clear(list);
+      if (!rows.length) {
+        list.append(text("p", "No prescriptions yet."));
+        return;
+      }
+      const groups = new Map();
+      rows.forEach((row) => {
+        const key = row.patientId || "unknown";
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(row);
+      });
+      groups.forEach((items) => {
+        const personName = items[0].patientName || "Family member";
+        const heading = document.createElement("h3");
+        heading.append(dot(items[0].colorKey), " ", initial(personName), " ", personName);
+        list.append(heading);
+        items.forEach((row) => {
+          const card = document.createElement("article");
+          card.className = "card";
+          const status = document.createElement("p");
+          status.append(text("span", row.status || "UNKNOWN", "badge"));
+          card.append(status);
+          card.append(text("p", (row.medications || []).join(", ") || "No medicine names yet"));
+          const actions = document.createElement("p");
+          actions.className = "row";
+          if (row.status === "PENDING_REVIEW") {
+            const open = document.createElement("button");
+            open.type = "button";
+            open.textContent = "Continue review";
+            open.addEventListener("click", () => continueReview(row.prescriptionId));
+            actions.append(open);
+          }
+          if (row.status === "ACTIVE") {
+            const download = document.createElement("button");
+            download.type = "button";
+            download.textContent = "Download calendar";
+            download.addEventListener("click", () => downloadCalendar(row.prescriptionId));
+            const test = document.createElement("button");
+            test.type = "button";
+            test.textContent = "Test reminder";
+            test.addEventListener("click", () => sendTest(row.prescriptionId, $("rx-status")));
+            const cancel = document.createElement("button");
+            cancel.type = "button";
+            cancel.textContent = "Cancel";
+            cancel.addEventListener("click", () => cancelSchedule(row.prescriptionId, personName));
+            actions.append(download, test, cancel);
+          }
+          card.append(actions);
+          list.append(card);
+        });
+      });
+      if (rows.length === 20) list.append(text("p", "Showing the latest 20.", "note"));
+    }
+    async function continueReview(id) {
+      try {
+        const item = await api("GET", "/prescriptions/" + id);
+        state.prescriptionId = id;
+        state.patientId = item.patientId || state.patientId;
+        openMedicines(item);
+      } catch (err) {
+        $("rx-status").textContent = err.message;
+      }
+    }
+
+    document.querySelectorAll("nav button").forEach((button) => {
+      button.addEventListener("click", () => show(button.dataset.screen));
+    });
+    fillSetup();
+    if (config().apiKey) show("family");
+    else show("setup");
+  </script>
+</body>
+</html>

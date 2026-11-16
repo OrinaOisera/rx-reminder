@@ -1,0 +1,217 @@
+{
+  "Comment": "Read a prescription photo and stop at PENDING_REVIEW. This workflow does not create reminders. OCR text is passed between states and is not written to DynamoDB.",
+  "TimeoutSeconds": 180,
+  "StartAt": "ParseUpload",
+  "States": {
+    "ParseUpload": {
+      "Type": "Pass",
+      "Parameters": {
+        "bucket.$": "$.detail.bucket.name",
+        "key.$": "$.detail.object.key",
+        "userId.$": "States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 1)",
+        "prescriptionId.$": "States.ArrayGetItem(States.StringSplit(States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 2), '.'), 0)"
+      },
+      "Next": "SetProcessing"
+    },
+    "SetProcessing": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "TimeoutSeconds": 10,
+      "Parameters": {
+        "TableName": "${TableName}",
+        "Key": {
+          "pk": {"S.$": "States.Format('USER#{}', $.userId)"},
+          "sk": {"S.$": "States.Format('RX#{}', $.prescriptionId)"}
+        },
+        "UpdateExpression": "SET #s = :processing, updatedAt = :now",
+        "ConditionExpression": "attribute_exists(pk) AND #s = :uploading",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":processing": {"S": "PROCESSING"},
+          ":uploading": {"S": "UPLOADING"},
+          ":now": {"S.$": "$$.State.EnteredTime"}
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        {
+          "ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"],
+          "Next": "AlreadyHandled"
+        },
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ProcessingError"
+        }
+      ],
+      "Next": "ExtractText"
+    },
+    "ExtractText": {
+      "Type": "Task",
+      "Resource": "${ExtractTextFunctionArn}",
+      "TimeoutSeconds": 30,
+      "ResultPath": "$.ocr",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "ThrottlingError"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ProcessingError"
+        }
+      ],
+      "Next": "EnoughText"
+    },
+    "EnoughText": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Or": [
+            {"Variable": "$.ocr.lineCount", "NumericLessThan": 3},
+            {"Variable": "$.ocr.avgConfidence", "NumericLessThan": 60}
+          ],
+          "Next": "NotEnoughText"
+        }
+      ],
+      "Default": "StructureWithBedrock"
+    },
+    "NotEnoughText": {
+      "Type": "Pass",
+      "Result": "We couldn't read that image clearly. Try a sharper, well-lit photo.",
+      "ResultPath": "$.failureReason",
+      "Next": "MarkFailed"
+    },
+    "StructureWithBedrock": {
+      "Type": "Task",
+      "Resource": "${StructureFunctionArn}",
+      "TimeoutSeconds": 60,
+      "ResultPath": "$.extracted",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "ThrottlingError"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["BedrockAccessError"],
+          "ResultPath": "$.error",
+          "Next": "ModelAccessFailed"
+        },
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ProcessingError"
+        }
+      ],
+      "Next": "IsPrescription"
+    },
+    "ModelAccessFailed": {
+      "Type": "Pass",
+      "Result": "The text model is not enabled for this account. Enable the Bedrock model, or change BedrockModelId, then try the photo again.",
+      "ResultPath": "$.failureReason",
+      "Next": "MarkFailed"
+    },
+    "IsPrescription": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Or": [
+            {"Variable": "$.extracted.is_prescription", "BooleanEquals": false},
+            {"Variable": "$.extracted.medications[0]", "IsPresent": false}
+          ],
+          "Next": "NotAPrescription"
+        }
+      ],
+      "Default": "DropOcrText"
+    },
+    "NotAPrescription": {
+      "Type": "Pass",
+      "Result": "That doesn't look like a prescription or medicine label.",
+      "ResultPath": "$.failureReason",
+      "Next": "MarkFailed"
+    },
+    "DropOcrText": {
+      "Type": "Pass",
+      "Comment": "The save step must not receive the OCR text.",
+      "Parameters": {
+        "userId.$": "$.userId",
+        "prescriptionId.$": "$.prescriptionId",
+        "extracted.$": "$.extracted"
+      },
+      "Next": "SavePendingReview"
+    },
+    "SavePendingReview": {
+      "Type": "Task",
+      "Resource": "${SaveResultFunctionArn}",
+      "TimeoutSeconds": 15,
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "ThrottlingError"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ProcessingError"
+        }
+      ],
+      "Next": "Done"
+    },
+    "ProcessingError": {
+      "Type": "Pass",
+      "Result": "Something went wrong processing your image. Please try again.",
+      "ResultPath": "$.failureReason",
+      "Next": "MarkFailed"
+    },
+    "MarkFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "TimeoutSeconds": 10,
+      "Parameters": {
+        "TableName": "${TableName}",
+        "Key": {
+          "pk": {"S.$": "States.Format('USER#{}', $.userId)"},
+          "sk": {"S.$": "States.Format('RX#{}', $.prescriptionId)"}
+        },
+        "UpdateExpression": "SET #s = :failed, failureReason = :reason, updatedAt = :now",
+        "ConditionExpression": "attribute_exists(pk) AND (#s = :uploading OR #s = :processing)",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":failed": {"S": "FAILED"},
+          ":uploading": {"S": "UPLOADING"},
+          ":processing": {"S": "PROCESSING"},
+          ":reason": {"S.$": "$.failureReason"},
+          ":now": {"S.$": "$$.State.EnteredTime"}
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        {
+          "ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"],
+          "Next": "Done"
+        }
+      ],
+      "Next": "Done"
+    },
+    "Done": {"Type": "Succeed"},
+    "AlreadyHandled": {"Type": "Succeed"}
+  }
+}

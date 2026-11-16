@@ -1,0 +1,592 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Rx Reminder. A caregiver photographs a prescription, reviews the extracted
+  medicines, reviews the generated day-by-day schedule, and only then confirms.
+  Nothing is scheduled before that confirm step. This stack is serverless and
+  idle cost is effectively zero: on-demand DynamoDB, HTTP API, and Lambda.
+
+# Reusable shape for this hackathon entry:
+#   Browser -> CloudFront -> private S3 object (the static page only)
+#   Browser -> HTTP API -> one router Lambda -> DynamoDB
+#   Browser -> presigned PUT -> private S3 bucket (TLS only, CORS for that PUT)
+#   S3 Object Created -> EventBridge -> Step Functions:
+#     set PROCESSING -> Textract -> Bedrock JSON -> PENDING_REVIEW
+#   Confirm creates EventBridge Scheduler entries and an SNS email topic.
+#   Nothing is scheduled before that confirm step.
+#   Account ids, regions, and secrets stay in parameters and !Ref/!Sub.
+# Demo auth is a shared API key. The user id is SHA-256(API key)[:12].
+# Production auth would be Cognito. Patient names are never sent to Textract
+# or Bedrock and must not be written to logs. The state machine logs errors
+# only, and its execution data is not included, so OCR text stays out of CloudWatch.
+
+Metadata:
+  RxReminder:
+    Pattern: http-api + lambda + single-table dynamodb + presigned s3 upload + step functions
+    Safety: >
+      Reminders are a convenience, not medical advice. Scheduling is refused
+      until the caller confirms the schedule they were shown.
+    Auth: Demo API key via the X-Api-Key header. Replace with Cognito outside the hackathon.
+
+Parameters:
+  ApiKey:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    MaxLength: 128
+    AllowedPattern: "^[!-~]{16,128}$"
+    Description: Shared demo API key, sent as X-Api-Key. Minimum 16 characters. Not a Cognito user pool.
+  BedrockModelId:
+    Type: String
+    Default: us.amazon.nova-lite-v1:0
+    Description: >
+      Bedrock model id used when structuring OCR text. Change this to a model
+      enabled in your account, for example a Claude Haiku model, if the default
+      inference profile is not available.
+  DefaultTimezone:
+    Type: String
+    Default: Africa/Nairobi
+    Description: IANA timezone suggested to the app. Dose times are calculated in this zone, not in the AWS region.
+  StageName:
+    Type: String
+    Default: prod
+    AllowedPattern: "^[a-zA-Z0-9]+$"
+    Description: HTTP API stage name. The base URL includes this path segment.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures:
+      - x86_64
+    MemorySize: 256
+    Timeout: 10
+
+Resources:
+  # Private photo bucket. The browser uploads with a presigned PUT, so the
+  # bucket itself stays blocked from public access and the CORS rule exists
+  # only to allow that browser PUT/GET. Uploads expire after 7 days.
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      # Object Created events go to EventBridge. A rule below starts processing
+      # only for keys under uploads/.
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - PUT
+              - HEAD
+            AllowedOrigins:
+              - "*"
+            ExposedHeaders:
+              - ETag
+            MaxAge: 3000
+      LifecycleConfiguration:
+        Rules:
+          # Prefix is the CloudFormation property this project's linter accepts.
+          # It deletes prescription photos after 7 days and calendar files after 90.
+          - Id: ExpireUploads
+            Status: Enabled
+            Prefix: uploads/
+            ExpirationInDays: 7
+          - Id: ExpireCalendars
+            Status: Enabled
+            Prefix: calendars/
+            ExpirationInDays: 90
+      Tags:
+        - Key: Project
+          Value: rx-reminder
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt Bucket.Arn
+              - !Sub "${Bucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  # One table for patients (PATIENT#) and prescriptions (RX#). TTL drops
+  # unfinished and expired prescription items. Patient items have no expiresAt.
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: rx-reminder
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref StageName
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - content-type
+          - x-api-key
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+      Tags:
+        Project: rx-reminder
+
+  # Fixed names avoid a circular dependency between the function and its log group.
+  # Keep the stack name short: Lambda function names are limited to 64 characters.
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/rx-api-${AWS::StackName}"
+      RetentionInDays: 14
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "rx-api-${AWS::StackName}"
+      CodeUri: src/
+      Handler: api.handler
+      Description: Patients, uploads, schedule preview, and confirm.
+      Timeout: 30
+      LoggingConfig:
+        LogGroup: !Ref ApiLogGroup
+      # Set the whole map here. A function-level Environment block replaces Globals
+      # rather than merging, which would drop the table and bucket names.
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+          BUCKET_NAME: !Ref Bucket
+          DEFAULT_TIMEZONE: !Ref DefaultTimezone
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          API_KEY: !Ref ApiKey
+          SCHEDULER_ROLE_ARN: !GetAtt SchedulerInvokeRole.Arn
+          REMINDER_FUNCTION_ARN: !GetAtt ReminderFunction.Arn
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref Table
+        - S3CrudPolicy:
+            BucketName: !Ref Bucket
+        # Schedule names are rx-{prescriptionId}-*. SMS has no topic ARN, so publish is *.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - scheduler:CreateSchedule
+                - scheduler:DeleteSchedule
+              Resource: !Sub "arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/rx-*"
+            # ListSchedules is authorized against "*", not a single schedule ARN.
+            - Effect: Allow
+              Action: scheduler:ListSchedules
+              Resource: "*"
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt SchedulerInvokeRole.Arn
+              Condition:
+                StringEquals:
+                  iam:PassedToService: scheduler.amazonaws.com
+            - Effect: Allow
+              Action:
+                - sns:CreateTopic
+                - sns:Subscribe
+                - sns:Publish
+              Resource: "*"
+      Events:
+        Proxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: ANY
+            Path: /{proxy+}
+        Root:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: ANY
+            Path: /
+      Tags:
+        Project: rx-reminder
+
+  # OCR, structuring, and the DynamoDB write. None of these receive the API key.
+  # The Bedrock function may call an inference profile, which is not a single-region
+  # model ARN, so bedrock:InvokeModel uses Resource "*". Narrow it once the model is fixed.
+  ExtractLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/rx-extract-${AWS::StackName}"
+      RetentionInDays: 14
+
+  ExtractTextFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "rx-extract-${AWS::StackName}"
+      CodeUri: src/
+      Handler: extract_text.handler
+      Description: Textract DetectDocumentText. Returns lines only, never Blocks.
+      MemorySize: 512
+      Timeout: 30
+      LoggingConfig:
+        LogGroup: !Ref ExtractLogGroup
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref Bucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "${Bucket.Arn}/uploads/*"
+            - Effect: Allow
+              Action: textract:DetectDocumentText
+              Resource: "*"
+      Tags:
+        Project: rx-reminder
+
+  StructureLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/rx-structure-${AWS::StackName}"
+      RetentionInDays: 14
+
+  StructureFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "rx-structure-${AWS::StackName}"
+      CodeUri: src/
+      Handler: structure.handler
+      Description: Bedrock Converse. Logs counts and latency, never the OCR text.
+      MemorySize: 512
+      Timeout: 60
+      LoggingConfig:
+        LogGroup: !Ref StructureLogGroup
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: "*"
+      Tags:
+        Project: rx-reminder
+
+  SaveLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/rx-save-${AWS::StackName}"
+      RetentionInDays: 14
+
+  SaveResultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "rx-save-${AWS::StackName}"
+      CodeUri: src/
+      Handler: save_result.handler
+      Description: Conditional write of PENDING_REVIEW. Does not store OCR text.
+      MemorySize: 256
+      Timeout: 10
+      LoggingConfig:
+        LogGroup: !Ref SaveLogGroup
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt Table.Arn
+      Tags:
+        Project: rx-reminder
+
+  ProcessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/vendedlogs/states/rx-process-${AWS::StackName}"
+      RetentionInDays: 14
+
+  ProcessPrescriptionStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "rx-process-${AWS::StackName}"
+      Type: STANDARD
+      DefinitionUri: statemachine/process_prescription.asl.json
+      DefinitionSubstitutions:
+        TableName: !Ref Table
+        ExtractTextFunctionArn: !GetAtt ExtractTextFunction.Arn
+        StructureFunctionArn: !GetAtt StructureFunction.Arn
+        SaveResultFunctionArn: !GetAtt SaveResultFunction.Arn
+      Logging:
+        Level: ERROR
+        IncludeExecutionData: false
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt ProcessLogGroup.Arn
+      Policies:
+        # Log delivery actions do not support a specific resource ARN.
+        # Without these, creating the state machine fails with
+        # "not authorized to access the Log Destination".
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogDelivery
+                - logs:GetLogDelivery
+                - logs:UpdateLogDelivery
+                - logs:DeleteLogDelivery
+                - logs:ListLogDeliveries
+                - logs:PutResourcePolicy
+                - logs:DescribeResourcePolicies
+                - logs:DescribeLogGroups
+              Resource: "*"
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt Table.Arn
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ExtractTextFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StructureFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SaveResultFunction
+      Tags:
+        Project: rx-reminder
+
+  # EventBridge assumes this role. It can only start this one state machine.
+  EventsInvokeStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartProcessPrescription
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref ProcessPrescriptionStateMachine
+
+  UploadReceivedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "rx-upload-${AWS::StackName}"
+      Description: Start prescription reading when a photo lands under uploads/.
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - "Object Created"
+        detail:
+          bucket:
+            name:
+              - !Ref Bucket
+          object:
+            key:
+              - prefix: uploads/
+      Targets:
+        - Arn: !Ref ProcessPrescriptionStateMachine
+          Id: ProcessPrescription
+          RoleArn: !GetAtt EventsInvokeStateMachineRole.Arn
+
+  # One invoke role for every dose schedule. The schedule name stays in the rx- prefix.
+  SchedulerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeReminder
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt ReminderFunction.Arn
+
+  ReminderLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/rx-reminder-${AWS::StackName}"
+      RetentionInDays: 14
+
+  ReminderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "rx-reminder-${AWS::StackName}"
+      CodeUri: src/
+      Handler: reminder_sender.handler
+      Description: Sends one named reminder. Invoked by EventBridge Scheduler, not by the HTTP API.
+      Timeout: 15
+      MemorySize: 256
+      LoggingConfig:
+        LogGroup: !Ref ReminderLogGroup
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: "*"
+      Tags:
+        Project: rx-reminder
+
+  # SourceAccount is enough. A wildcard SourceArn does not match Scheduler invocations.
+  ReminderSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ReminderFunction
+      Action: lambda:InvokeFunction
+      Principal: scheduler.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  # Static page only. The photo bucket stays private. CloudFront supplies
+  # HTTPS on its own domain; there is no custom domain.
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: Project
+          Value: rx-reminder
+
+  WebOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "rx-web-${AWS::StackName}"
+        Description: Read the static page only.
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: Rx Reminder static page
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        PriceClass: PriceClass_200
+        Origins:
+          - Id: web
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: web
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          # AWS managed CachingDisabled, so a replaced index.html shows up immediately.
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+      Tags:
+        - Key: Project
+          Value: rx-reminder
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${WebBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}"
+
+Outputs:
+  ApiUrl:
+    Description: Base URL for the HTTP API. Paths are /patients and /prescriptions.
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}"
+  BucketName:
+    Description: Private bucket for prescription photos and, later, calendar files.
+    Value: !Ref Bucket
+  TableName:
+    Description: Single on-demand DynamoDB table.
+    Value: !Ref Table
+  StateMachineArn:
+    Description: Workflow that reads a photo and stops at PENDING_REVIEW.
+    Value: !Ref ProcessPrescriptionStateMachine
+  ReminderFunctionArn:
+    Description: Lambda that EventBridge Scheduler invokes for each dose.
+    Value: !GetAtt ReminderFunction.Arn
+  WebUrl:
+    Description: HTTPS address of the static page.
+    Value: !Sub "https://${WebDistribution.DomainName}/"
+  WebBucketName:
+    Description: Private bucket that holds index.html for the static page.
+    Value: !Ref WebBucket
